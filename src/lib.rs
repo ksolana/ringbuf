@@ -31,7 +31,7 @@ impl SPSCRingBuffer {
         println!("`{0}` at head:{1}, tail:{2}", op, self.head, self.tail);
     }
     pub fn push(&mut self, v: u64) -> bool {
-        self.print_status(format!("Push {v}"));
+        dbg!(self.print_status(format!("Push {v}")));
         if !self.full() {
             self.buffer.push(v);
             self.tail = (self.tail + 1) % self.buffer.capacity() as u64;
@@ -42,7 +42,7 @@ impl SPSCRingBuffer {
     }
     pub fn pop(&mut self) -> Result<u64, SPSCRingBufferError> {
         let v = self.buffer[self.head as usize];
-        self.print_status(format!("Pop {v}"));
+        dbg!(self.print_status(format!("Pop {v}")));
         if self.empty() {
             Err(SPSCRingBufferError::PopError(self.tail))
         } else {
