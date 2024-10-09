@@ -1,5 +1,16 @@
+/// The ring buffer implementation that supports Single Producer and Single Consumer.
+/// The ring buffer is a FIFO data structure that uses a single,
+/// fixed-size buffer as if it were connected end-to-end.
+
+/// NOTE:
+/// 1. It 'relies' on the fact that the buffer never wraps around u64::MAX.
+/// https://www.snellman.net/blog/archive/2016-12-13-ring-buffers/
+/// https://lkml.iu.edu/hypermail/linux/kernel/0409.1/2709.html
+/// 2. The implementation is not thread-safe.
+
 use std::fmt;
 use thiserror::Error;
+use log::debug;
 
 #[derive(Error, Debug)]
 pub enum SPSCRingBufferError {
@@ -9,9 +20,10 @@ pub enum SPSCRingBufferError {
     PopError(u64)
 }
 
+/// FIFO ring buffer with Single Producer and Single Consumer.
 pub struct SPSCRingBuffer {
-    head: u64,
-    tail: u64,
+    head: u64, // From where we will **pop** the next value.
+    tail: u64, // To where we will **push** the next value.
     buffer: Vec<u64>,
 }
 
@@ -19,7 +31,10 @@ impl SPSCRingBuffer {
     pub fn new(cap: usize) -> Self {
         let head = 0;
         let tail = 0;
-        let buffer = Vec::with_capacity(cap);
+        let buffer = vec!(0; cap);
+        if (cap & (cap - 1)) != 0 {
+            debug!("Capacity not a power of 2, overflow not supported.");
+        }
         Self {
             head,
             tail,
@@ -33,31 +48,50 @@ impl SPSCRingBuffer {
     pub fn push(&mut self, v: u64) -> bool {
         dbg!(self.print_status(format!("Push {v}")));
         if !self.full() {
-            self.buffer.push(v);
-            self.tail = (self.tail + 1) % self.buffer.capacity() as u64;
+            let idx = self.tail as usize % self.buffer.capacity();
+            self.buffer[idx] = v;
+            self.tail = self.tail + 1;
             true
         } else {
             false
         }
     }
+    /// Forcefully pushes a value into the ring buffer.
+    /// If the buffer is full, it will overwrite the oldest value.
+    pub fn force_push(&mut self, v: u64) {
+        dbg!(self.print_status(format!("Force Push Before: {v}")));
+        let idx = self.tail as usize % self.buffer.capacity();
+        self.buffer[idx] = v;
+        self.tail = self.tail + 1;
+        dbg!(self.print_status(format!("Force Push After: {v}")));
+    }
+    /// Pops a value from the ring buffer.
+    /// Returns an error if the buffer is empty.
     pub fn pop(&mut self) -> Result<u64, SPSCRingBufferError> {
-        let v = self.buffer[self.head as usize];
+        let idx = self.head as usize % self.buffer.capacity();
+        let v = self.buffer[idx];
         dbg!(self.print_status(format!("Pop {v}")));
         if self.empty() {
             Err(SPSCRingBufferError::PopError(self.tail))
         } else {
-            self.head = (self.head + 1) % self.buffer.capacity() as u64;
+            // For debugging purpose.
+
+            self.buffer[idx] = 25;
+            self.head = self.head + 1;
             Ok(v)
         }
     }
     pub fn full(&self) -> bool {
-        (self.tail + 1) % self.buffer.capacity() as u64 == self.head
+        self.size() == self.buffer.capacity()
     }
     pub fn empty(&self) -> bool {
         self.head == self.tail
     }
     pub fn capacity(&self) -> usize {
         self.buffer.capacity()
+    }
+    pub fn size(&self) -> usize {
+        (self.tail - self.head) as usize
     }
 }
 
@@ -84,6 +118,25 @@ mod tests {
         for i in 0..10 {
             assert!(rb.push(i));
         }
+    }
+    #[test]
+    fn force_push() {
+        let mut rb : SPSCRingBuffer = SPSCRingBuffer::new(10);
+        for i in 0..100 {
+            rb.force_push(i);
+        }
+        assert!(rb.pop().unwrap() == 90);
+    }
+    #[test]
+    fn force_push_and_pop() {
+        let mut rb = SPSCRingBuffer::new(10);
+        for i in 0..10 {
+            rb.force_push(i);
+        }
+        for _ in 0..10 {
+            assert!(rb.pop().is_ok());
+        }
+        //assert!(rb.pop().unwrap() == 99);
     }
     #[test]
     fn push_and_pop() {
