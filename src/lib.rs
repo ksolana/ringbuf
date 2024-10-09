@@ -1,16 +1,13 @@
 /// The ring buffer implementation that supports Single Producer and Single Consumer.
 /// The ring buffer is a FIFO data structure that uses a single,
 /// fixed-size buffer as if it were connected end-to-end.
+/// Design choices:
+/// The implementation is not thread-safe.
+/// When the buffer is full, the oldest value is overwritten.
 
-/// NOTE:
-/// 1. It 'relies' on the fact that the buffer is power of 2.
-/// https://www.snellman.net/blog/archive/2016-12-13-ring-buffers/
-/// https://lkml.iu.edu/hypermail/linux/kernel/0409.1/2709.html
-/// 2. The implementation is not thread-safe.
 
-use std::{fmt, ops::Add};
+use std::fmt;
 use thiserror::Error;
-use log::debug;
 
 #[derive(Error, Debug)]
 pub enum SPSCRingBufferError {
@@ -20,37 +17,38 @@ pub enum SPSCRingBufferError {
     PopError(u64)
 }
 
+/// Populate the array with this value to check if the value is popped.
+/// Useful for debugging.
+const SENTINEL_VALUE: u64 = 0xdeadc0de;
+
 /// FIFO ring buffer with Single Producer and Single Consumer.
 pub struct SPSCRingBuffer {
-    head: u64, // From where we will **pop** the next value.
-    tail: u64, // To where we will **push** the next value.
+    read: u64, // From where we will **pop** the next value.
+    write: u64, // To where we will **push** the next value.
     buffer: Vec<u64>,
 }
 
 impl SPSCRingBuffer {
     pub fn new(cap: usize) -> Self {
-        let head = 0;
-        let tail = 0;
+        let read = 0;
+        let write = 0;
         let buffer = vec!(0; cap);
-        if (cap & (cap - 1)) != 0 {
-            debug!("Capacity not a power of 2, may not work correctly.");
-        }
         Self {
-            head,
-            tail,
+            read,
+            write,
             buffer
         }
     }
     pub fn print_status(&self, op: String) {
         println!("Inside print_status: {:?}", self);
-        println!("`{0}` at head:{1}, tail:{2}", op, self.head, self.tail);
+        println!("`{0}` at read:{1}({2}), write:{3}({4})", op, self.modulo(self.read), self.read, self.modulo(self.write), self.write);
     }
     pub fn push(&mut self, v: u64) -> bool {
         dbg!(self.print_status(format!("Push Before: {v}")));
         if !self.full() {
-            let idx = self.tail as usize % self.buffer.capacity();
+            let idx = self.write as usize % self.buffer.capacity();
             self.buffer[idx] = v;
-            self.tail = self.fold(self.tail + 1);
+            self.write = self.fold(self.write + 1);
             dbg!(self.print_status(format!("Push After: {v}")));
             true
         } else {
@@ -61,23 +59,26 @@ impl SPSCRingBuffer {
     /// If the buffer is full, it will overwrite the oldest value.
     pub fn force_push(&mut self, v: u64) {
         dbg!(self.print_status(format!("Force Push Before: {v}")));
-        let idx = self.tail as usize % self.buffer.capacity();
+        if self.full() {
+            self.read = self.fold(self.read + 1);
+        }
+        let idx = self.write as usize % self.buffer.capacity();
         self.buffer[idx] = v;
-        self.tail = self.fold(self.tail + 1);
+        self.write = self.fold(self.write + 1);
         dbg!(self.print_status(format!("Force Push After: {v}")));
     }
     /// Pops a value from the ring buffer.
     /// Returns an error if the buffer is empty.
     pub fn pop(&mut self) -> Result<u64, SPSCRingBufferError> {
-        let idx = self.head as usize % self.buffer.capacity();
+        let idx = self.read as usize % self.buffer.capacity();
         let v = self.buffer[idx];
         dbg!(self.print_status(format!("Pop {v}")));
         if self.empty() {
-            Err(SPSCRingBufferError::PopError(self.tail))
+            Err(SPSCRingBufferError::PopError(self.write))
         } else {
             // For debugging purpose.
-            dbg!(self.buffer[idx] = 25);
-            self.head = self.fold(self.head + 1);
+            dbg!(self.buffer[idx] = SENTINEL_VALUE);
+            self.read = self.fold(self.read + 1);
             Ok(v)
         }
     }
@@ -85,31 +86,35 @@ impl SPSCRingBuffer {
         self.free() == 0
     }
     pub fn empty(&self) -> bool {
-        self.tail == self.head
+        self.write == self.read
     }
     /// Returns the capacity (maximum number of elements that
     /// can be allocated) of the ring buffer.
     pub fn capacity(&self) -> usize {
         self.buffer.capacity()
     }
-    pub fn distance(&self) -> u64 {
-        if self.tail >= self.head {
-            self.tail - self.head
+    pub fn wrapped_distance(&self) -> u64 {
+        if self.write >= self.read {
+            (self.write - self.read) % self.buffer.capacity() as u64
         } else {
-            self.tail + 2*self.buffer.capacity() as u64 - self.head
+            (self.write + self.buffer.capacity() as u64 - self.read) % self.buffer.capacity() as u64
         }
     }
     /// Returns the number of elements in the ring buffer.
     pub fn size(&self) -> usize {
-        self.fold(self.distance()) as usize
+        self.wrapped_distance() as usize
     }
     /// Returns the number of free slots in the ring buffer.
+    /// Use one slot as sentinel.
     pub fn free(&self) -> usize {
-        self.buffer.capacity() - self.size()
+        self.buffer.capacity() - self.size() -1
     }
     fn fold(&self, val: u64) -> u64 {
         // See dizzy57's answer on https://www.snellman.net/blog/archive/2016-12-13-ring-buffers/
-        val % (2*self.buffer.capacity()) as u64
+        val % (64*self.buffer.capacity()) as u64
+    }
+    fn modulo(&self, val: u64) -> u64 {
+        val % self.buffer.capacity() as u64
     }
 }
 
@@ -129,13 +134,17 @@ mod tests {
     fn create() {
         let rb : SPSCRingBuffer = SPSCRingBuffer::new(10);
         assert_eq!(rb.capacity(), 10);
+        assert_eq!(rb.size(), 0);
+        assert_eq!(rb.free(), rb.capacity() - rb.size() -1);
     }
     #[test]
     fn push() {
-        let mut rb : SPSCRingBuffer = SPSCRingBuffer::new(10);
-        for i in 0..10 {
+        let mut rb : SPSCRingBuffer = SPSCRingBuffer::new(8);
+        for i in 0..7 {
             assert!(rb.push(i));
         }
+        assert_eq!(rb.size(), 7);
+        assert_eq!(rb.free(), rb.capacity() - rb.size() -1);
     }
     #[test]
     fn force_push() {
@@ -143,7 +152,10 @@ mod tests {
         for i in 0..97 {
             rb.force_push(i);
         }
-        assert_eq!(rb.pop().unwrap(), 96);
+        assert_eq!(rb.pop().unwrap(), 90);
+        assert_eq!(rb.pop().unwrap(), 91);
+        assert_eq!(rb.size(), 5);
+        assert_eq!(rb.free(), rb.capacity() - rb.size() -1);
     }
     #[test]
     fn force_push_and_pop() {
@@ -154,7 +166,7 @@ mod tests {
         for _ in 0..10 {
             assert!(rb.pop().is_ok());
         }
-        assert_eq!(rb.free(), 16);
+        assert_eq!(rb.free(), 15);
     }
     #[test]
     fn push_and_pop() {
@@ -165,6 +177,8 @@ mod tests {
         for _ in 0..10 {
             assert!(rb.pop().is_ok());
         }
+        assert_eq!(rb.size(), 0);
+        assert_eq!(rb.free(), rb.capacity() - rb.size() -1);
     }
     #[test]
     fn push_and_pop_at_random() {
@@ -185,6 +199,7 @@ mod tests {
                 }
             }
         }
+        assert_eq!(rb.free(), rb.capacity() - rb.size() -1);
     }
     #[test]
     fn check_size() {
@@ -193,6 +208,6 @@ mod tests {
             rb.force_push(i);
         }
         assert_eq!(rb.size(), 11);
-        assert_eq!(rb.free(), rb.capacity() - rb.size());
+        assert_eq!(rb.free(), rb.capacity() - rb.size() -1);
     }
 }
