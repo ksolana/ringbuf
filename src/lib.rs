@@ -193,5 +193,6 @@ mod tests {
             rb.force_push(i);
         }
         assert_eq!(rb.size(), 11);
+        assert_eq!(rb.free(), rb.capacity() - rb.size());
     }
 }
