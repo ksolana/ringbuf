@@ -3,12 +3,12 @@
 /// fixed-size buffer as if it were connected end-to-end.
 
 /// NOTE:
-/// 1. It 'relies' on the fact that the buffer never wraps around u64::MAX.
+/// 1. It 'relies' on the fact that the buffer is power of 2.
 /// https://www.snellman.net/blog/archive/2016-12-13-ring-buffers/
 /// https://lkml.iu.edu/hypermail/linux/kernel/0409.1/2709.html
 /// 2. The implementation is not thread-safe.
 
-use std::fmt;
+use std::{fmt, ops::Add};
 use thiserror::Error;
 use log::debug;
 
@@ -33,7 +33,7 @@ impl SPSCRingBuffer {
         let tail = 0;
         let buffer = vec!(0; cap);
         if (cap & (cap - 1)) != 0 {
-            debug!("Capacity not a power of 2, overflow not supported.");
+            debug!("Capacity not a power of 2, may not work correctly.");
         }
         Self {
             head,
@@ -46,11 +46,12 @@ impl SPSCRingBuffer {
         println!("`{0}` at head:{1}, tail:{2}", op, self.head, self.tail);
     }
     pub fn push(&mut self, v: u64) -> bool {
-        dbg!(self.print_status(format!("Push {v}")));
+        dbg!(self.print_status(format!("Push Before: {v}")));
         if !self.full() {
             let idx = self.tail as usize % self.buffer.capacity();
             self.buffer[idx] = v;
-            self.tail = self.tail + 1;
+            self.tail = self.fold(self.tail + 1);
+            dbg!(self.print_status(format!("Push After: {v}")));
             true
         } else {
             false
@@ -62,7 +63,7 @@ impl SPSCRingBuffer {
         dbg!(self.print_status(format!("Force Push Before: {v}")));
         let idx = self.tail as usize % self.buffer.capacity();
         self.buffer[idx] = v;
-        self.tail = self.tail + 1;
+        self.tail = self.fold(self.tail + 1);
         dbg!(self.print_status(format!("Force Push After: {v}")));
     }
     /// Pops a value from the ring buffer.
@@ -75,23 +76,40 @@ impl SPSCRingBuffer {
             Err(SPSCRingBufferError::PopError(self.tail))
         } else {
             // For debugging purpose.
-
-            self.buffer[idx] = 25;
-            self.head = self.head + 1;
+            dbg!(self.buffer[idx] = 25);
+            self.head = self.fold(self.head + 1);
             Ok(v)
         }
     }
     pub fn full(&self) -> bool {
-        self.size() == self.buffer.capacity()
+        self.free() == 0
     }
     pub fn empty(&self) -> bool {
-        self.head == self.tail
+        self.tail == self.head
     }
+    /// Returns the capacity (maximum number of elements that
+    /// can be allocated) of the ring buffer.
     pub fn capacity(&self) -> usize {
         self.buffer.capacity()
     }
+    pub fn distance(&self) -> u64 {
+        if self.tail >= self.head {
+            self.tail - self.head
+        } else {
+            self.tail + 2*self.buffer.capacity() as u64 - self.head
+        }
+    }
+    /// Returns the number of elements in the ring buffer.
     pub fn size(&self) -> usize {
-        (self.tail - self.head) as usize
+        self.fold(self.distance()) as usize
+    }
+    /// Returns the number of free slots in the ring buffer.
+    pub fn free(&self) -> usize {
+        self.buffer.capacity() - self.size()
+    }
+    fn fold(&self, val: u64) -> u64 {
+        // See dizzy57's answer on https://www.snellman.net/blog/archive/2016-12-13-ring-buffers/
+        val % (2*self.buffer.capacity()) as u64
     }
 }
 
@@ -121,26 +139,26 @@ mod tests {
     }
     #[test]
     fn force_push() {
-        let mut rb : SPSCRingBuffer = SPSCRingBuffer::new(10);
-        for i in 0..100 {
+        let mut rb : SPSCRingBuffer = SPSCRingBuffer::new(8);
+        for i in 0..97 {
             rb.force_push(i);
         }
-        assert!(rb.pop().unwrap() == 90);
+        assert_eq!(rb.pop().unwrap(), 96);
     }
     #[test]
     fn force_push_and_pop() {
-        let mut rb = SPSCRingBuffer::new(10);
+        let mut rb = SPSCRingBuffer::new(16);
         for i in 0..10 {
-            rb.force_push(i);
+            rb.force_push(i+2);
         }
         for _ in 0..10 {
             assert!(rb.pop().is_ok());
         }
-        //assert!(rb.pop().unwrap() == 99);
+        assert_eq!(rb.free(), 16);
     }
     #[test]
     fn push_and_pop() {
-        let mut rb = SPSCRingBuffer::new(10);
+        let mut rb = SPSCRingBuffer::new(16);
         for i in 0..10 {
             assert!(rb.push(i));
         }
@@ -150,7 +168,7 @@ mod tests {
     }
     #[test]
     fn push_and_pop_at_random() {
-        let mut rb = SPSCRingBuffer::new(10);
+        let mut rb = SPSCRingBuffer::new(16);
         rb.push(0);
         rb.push(1);
         let mut rng = rand::thread_rng();
@@ -167,5 +185,13 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn check_size() {
+        let mut rb : SPSCRingBuffer = SPSCRingBuffer::new(16);
+        for i in 0..11 {
+            rb.force_push(i);
+        }
+        assert_eq!(rb.size(), 11);
     }
 }
