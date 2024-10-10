@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use ringbuf::spsc_array::SPSCRingBuffer;
+use ringbuf::spsc_bounded::SPSCRingBuffer;
 
 fn create(n: u64) {
     for _ in 0..n {

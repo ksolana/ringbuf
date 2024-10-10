@@ -1,1 +1,1 @@
-pub mod spsc_array;
+pub mod spsc_bounded;
