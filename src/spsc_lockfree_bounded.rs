@@ -108,6 +108,17 @@ mod tests {
   use rand::Rng;
   use SPSCRingBufferError;
 
+
+  #[test]
+  fn test_false_sharing() {
+    let f: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(4);
+    let addr1 = &f.read.load(Ordering::SeqCst) as *const _ as usize;
+    let addr2 = &f.write.load(Ordering::SeqCst) as *const _ as usize;
+    if addr1 / 64 == addr2 / 64 {
+        panic!("false sharing read at {:x}, write at {:x}", addr1, addr2);
+    }
+  }
+
   #[test]
   fn test_spsc_ring_buffer() {
     let buffer: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(3);
