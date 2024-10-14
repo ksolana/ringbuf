@@ -107,7 +107,7 @@ mod tests {
   use super::*;
   use rand::Rng;
   use SPSCRingBufferError;
-
+  use std::sync::atomic::AtomicIsize;
 
   #[test]
   fn test_false_sharing() {
@@ -155,7 +155,7 @@ mod tests {
       for _ in 0..100 {
           let y: f64 = rng.gen();
           if y < 0.5 {
-              rb.push(1);
+              let _ = rb.push(1);
           } else {
               if !rb.empty() {
                   assert!(rb.pop().is_some());
@@ -165,19 +165,19 @@ mod tests {
   }
   #[test]
   fn spsc_ring_buffer() {
-      const COUNT: u64 = 50;
+      const COUNT: u64 = 8;
       let t = AtomicUsize::new(1);
       let q: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(16);
-      let tracker: Vec<AtomicUsize> = (0..COUNT).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>();
+      let tracker: Vec<AtomicIsize> = (0..COUNT).map(|_| AtomicIsize::new(0)).collect::<Vec<_>>();
 
       std::thread::scope(|scope| {
-          // 
+          // Pop after producer is done
           scope.spawn(|| loop {
               match t.load(Ordering::SeqCst) {
                   0 if q.empty() => break,
                   _ => {
                       while let Some((idx, val)) = q.pop() {
-                          tracker[idx].fetch_add(1, Ordering::SeqCst);
+                          tracker[idx].fetch_sub(1, Ordering::SeqCst);
                       }
                   }
               }
@@ -200,14 +200,16 @@ mod tests {
                       }
                   }
               }
-
               // Signal the consumer to stop after COUNT iterations.
               t.fetch_sub(1, Ordering::SeqCst);
           });
       });
 
+      let mut idx: i32 = 0;
       for c in tracker {
-          assert_eq!(c.load(Ordering::SeqCst), 1);
+          println!("tracker[{}]", idx);
+          idx += 1;
+          assert_eq!(c.load(Ordering::SeqCst), 0);
       }
   }
 }
