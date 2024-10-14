@@ -23,22 +23,22 @@ pub enum SPSCRingBufferError {
     PopError(usize),
 }
 
-pub struct SpscRingBuffer<T> {
+pub struct SPSCRingBuffer<T> {
     buffer: Vec<UnsafeCell<T>>,
     capacity: usize,
     write: AtomicUsize,
     read: AtomicUsize,
 }
 
-unsafe impl<T: Send> Sync for SpscRingBuffer<T> {}
+unsafe impl<T: Send> Sync for SPSCRingBuffer<T> {}
 
-impl<T> SpscRingBuffer<T> {
+impl<T> SPSCRingBuffer<T> {
     pub fn new(capacity: usize) -> Self {
         let mut buffer = Vec::with_capacity(capacity);
         for _ in 0..capacity {
             buffer.push(UnsafeCell::new(unsafe { std::mem::zeroed() }));
         }
-        SpscRingBuffer {
+        SPSCRingBuffer {
             buffer,
             capacity,
             write: AtomicUsize::new(0),
@@ -92,7 +92,7 @@ impl<T> SpscRingBuffer<T> {
     }
 }
 
-impl<T> fmt::Debug for SpscRingBuffer<T> {
+impl<T> fmt::Debug for SPSCRingBuffer<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.buffer[..].fmt(f)
     }
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_false_sharing() {
-        let f: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(4);
+        let f: SPSCRingBuffer<u64> = SPSCRingBuffer::<u64>::new(4);
         let addr1 = &f.read.load(Ordering::SeqCst) as *const _ as usize;
         let addr2 = &f.write.load(Ordering::SeqCst) as *const _ as usize;
         if addr1 / 64 == addr2 / 64 {
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_spsc_ring_buffer() {
-        let buffer: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(3);
+        let buffer: SPSCRingBuffer<u64> = SPSCRingBuffer::<u64>::new(3);
 
         assert!(buffer.push(1).is_ok());
         assert!(buffer.push(2).is_ok());
@@ -133,7 +133,7 @@ mod tests {
     }
     #[test]
     fn push_and_pop() {
-        let rb = SpscRingBuffer::new(8);
+        let rb = SPSCRingBuffer::new(8);
         for i in 0..7u64 {
             assert!(rb.push(i).is_ok());
         }
@@ -147,7 +147,7 @@ mod tests {
     }
     #[test]
     fn push_and_pop_at_random() {
-        let rb = SpscRingBuffer::new(16);
+        let rb = SPSCRingBuffer::new(16);
         assert!(rb.push(0).is_ok());
         assert!(rb.push(1).is_ok());
         let mut rng = rand::thread_rng();
@@ -167,7 +167,7 @@ mod tests {
     fn spsc_ring_buffer() {
         const COUNT: u64 = 8;
         let t = AtomicUsize::new(1);
-        let q: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(16);
+        let q: SPSCRingBuffer<u64> = SPSCRingBuffer::<u64>::new(16);
         let tracker: Vec<AtomicIsize> = (0..COUNT).map(|_| AtomicIsize::new(0)).collect::<Vec<_>>();
 
         std::thread::scope(|scope| {
