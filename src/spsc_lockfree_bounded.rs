@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::cell::UnsafeCell;
 use thiserror::Error;
+use std::fmt;
 
 #[derive(Error, Debug)]
 pub enum SPSCRingBufferError {
@@ -46,6 +47,13 @@ impl<T> SpscRingBuffer<T> {
     }
   }
 
+  pub fn print_status(&self, op: String) {
+    let read = self.read.load(Ordering::SeqCst);
+    let write = self.write.load(Ordering::SeqCst);
+    //println!("Inside print_status: {:?}", self); TODO: impl fmt::Debug
+    println!("`{0}` at read:{1}, write:{2}", op, read, write);
+  }
+
   pub fn push(&self, value: T) -> Result<usize, SPSCRingBufferError> {
     // TODO: Implement caching for writer index.
     let write = self.write.load(Ordering::Relaxed);
@@ -55,6 +63,7 @@ impl<T> SpscRingBuffer<T> {
       return Err(SPSCRingBufferError::PushError(write)); // Buffer is full
     }
 
+    self.print_status(format!("Push:"));
     unsafe {
       *self.buffer[write].get() = value;
     }
@@ -71,6 +80,7 @@ impl<T> SpscRingBuffer<T> {
       return None;
     }
 
+    self.print_status(format!("Pop:"));
     let value = unsafe { std::ptr::read(self.buffer[read].get()) };
     // Remove the use of `%` operator by using a mask.
     self.read.store((read + 1) % self.capacity, Ordering::Release);
@@ -82,6 +92,12 @@ impl<T> SpscRingBuffer<T> {
   }
 }
 
+impl<T> fmt::Debug for SpscRingBuffer<T> {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      self.buffer[..].fmt(f)
+  }
+}
+
 pub fn empty(read_idx : usize, write_idx : usize) -> bool {
   read_idx == write_idx
 }
@@ -89,6 +105,8 @@ pub fn empty(read_idx : usize, write_idx : usize) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use rand::Rng;
+  use SPSCRingBufferError;
 
   #[test]
   fn test_spsc_ring_buffer() {
@@ -103,43 +121,81 @@ mod tests {
     assert_eq!(buffer.pop(), None); // Buffer should be empty
   }
   #[test]
+  fn push_and_pop() {
+      let rb = SpscRingBuffer::new(8);
+      for i in 0..7u64 {
+          assert!(rb.push(i).is_ok());
+      }
+      assert_eq!(rb.read.load(Ordering::SeqCst), 0);
+      assert_eq!(rb.write.load(Ordering::SeqCst), 7);
+      assert!(rb.push(0).is_err());
+      for _ in 0..7u64 {
+        assert!(rb.pop().is_some());
+      }
+      assert!(rb.pop().is_none());
+  }
+  #[test]
+  fn push_and_pop_at_random() {
+      let rb = SpscRingBuffer::new(16);
+      assert!(rb.push(0).is_ok());
+      assert!(rb.push(1).is_ok());
+      let mut rng = rand::thread_rng();
+
+      for _ in 0..100 {
+          let y: f64 = rng.gen();
+          if y < 0.5 {
+              rb.push(1);
+          } else {
+              if !rb.empty() {
+                  assert!(rb.pop().is_some());
+              }
+          }
+      }
+  }
+  #[test]
   fn spsc_ring_buffer() {
       const COUNT: u64 = 50;
       let t = AtomicUsize::new(1);
-      let q: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(3);
-      let v: Vec<AtomicUsize> = (0..COUNT).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>();
+      let q: SpscRingBuffer<u64> = SpscRingBuffer::<u64>::new(16);
+      let tracker: Vec<AtomicUsize> = (0..COUNT).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>();
 
       std::thread::scope(|scope| {
+          // 
           scope.spawn(|| loop {
               match t.load(Ordering::SeqCst) {
                   0 if q.empty() => break,
                   _ => {
                       while let Some((idx, val)) = q.pop() {
-                          v[idx].fetch_add(1, Ordering::SeqCst);
+                          tracker[idx].fetch_add(1, Ordering::SeqCst);
                       }
                   }
               }
           });
 
           scope.spawn(|| {
+              // Keep pushing until the buffer is full
               for i in 0..COUNT {
                   match q.push(i) {
                       Ok(n) => {
-                        v[n].fetch_add(1, Ordering::SeqCst);
+                        tracker[n].fetch_add(1, Ordering::SeqCst);
                       },
-                      Err(_) => {
-                          println!("Error while pushing the value");
+                      Err(SPSCRingBufferError::PushError(x)) => {
+                          println!("Error while pushing the value {i} at idx {x}");
                           std::thread::sleep(std::time::Duration::from_millis(1));
                           continue;
+                      }
+                      _ => {
+                        panic!("Unexpected error");
                       }
                   }
               }
 
+              // Signal the consumer to stop after COUNT iterations.
               t.fetch_sub(1, Ordering::SeqCst);
           });
       });
 
-      for c in v {
+      for c in tracker {
           assert_eq!(c.load(Ordering::SeqCst), 1);
       }
   }
