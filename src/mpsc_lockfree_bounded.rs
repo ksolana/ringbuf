@@ -66,13 +66,15 @@ mod tests {
     let buffer_clone = Arc::clone(&buffer);
 
     let producer = thread::spawn(move || {
-      for i in 0..3 {
-        buffer_clone.try_push(i).unwrap();
+      for i in 0..100 {
+        if buffer_clone.try_push(i).is_ok() {
+          println!("Produced: {}", i);
+        }
       }
     });
 
     let consumer = thread::spawn(move || {
-      for _ in 0..3 {
+      for _ in 0..100 {
         while let Some(item) = buffer.pop() {
           println!("Consumed: {}", item);
         }
